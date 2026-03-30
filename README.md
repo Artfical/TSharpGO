@@ -21,7 +21,7 @@ TSharp GO, T-Sharp programlama dilinin resmi ve yerleşik entegre geliştirme or
 
 TSharp GO, T-Sharp (T#) programlama dili için özel olarak tasarlanmış, hafif, yüksek performanslı ve akıllı bir Entegre Geliştirme Ortamıdır. Standart ve genel amaçlı metin editörlerinin aksine, T-Sharp'ın Türkçe sözdizimini (syntax) yerel olarak anlar. Geliştiriciye kod yazım aşamasında anlık rehberlik eder, mantıksal hataları daha derleme aşamasına geçmeden tespit eder ve geliştirme sürecini büyük ölçüde hızlandırır.
 
-Önemli Sürüm Notu (v0.1 Alpha): TSharp GO şu anda erken geliştirme (v0.1 Alpha) aşamasındadır. Bu nedenle proje dizininde derlenmiş, doğrudan çalıştırılabilir (.exe veya ELF formatında) kurulum dosyaları henüz bulunmamaktadır. Test uzmanlarının ve geliştiricilerin, ortamı doğrudan kaynak kod üzerinden Python yorumlayıcısı ile çalıştırması gerekmektedir.
+Önemli Sürüm Notu (v0.2 Alpha): TSharp GO şu anda erken geliştirme (v0.2 Alpha) aşamasındadır. Bu nedenle proje dizininde derlenmiş, doğrudan çalıştırılabilir (.exe veya ELF formatında) kurulum dosyaları henüz bulunmamaktadır. Test uzmanlarının ve geliştiricilerin, ortamı doğrudan kaynak kod üzerinden Python yorumlayıcısı ile çalıştırması gerekmektedir.
 
 ---
 
@@ -69,7 +69,7 @@ Sistem Gereksinimi Notu: İşletim sisteminizin terminalinde "tsharp" ve "derle"
 
 ## 4. Kurulum ve Çalıştırma Talimatları (Kaynak Kod Üzerinden)
 
-TSharp GO v0.1 Alpha sürümünü bilgisayarınızda derlemek ve çalıştırmak için aşağıdaki adımları sırasıyla izlemeniz gerekmektedir:
+TSharp GO v0.2 Alpha sürümünü bilgisayarınızda derlemek ve çalıştırmak için aşağıdaki adımları sırasıyla izlemeniz gerekmektedir:
 
 1. Depoyu Klonlama: Bu repoyu bilgisayarınıza indirin veya Git üzerinden klonlayın.
 2. Dizin Erişimi: Terminal (CMD, PowerShell, Bash) üzerinden indirdiğiniz proje dizinine giriş yapın.
@@ -82,7 +82,7 @@ TSharp GO v0.1 Alpha sürümünü bilgisayarınızda derlemek ve çalıştırmak
 
 ## 5. Gelecek Vizyonu ve Yol Haritası (Roadmap)
 
-Şu an v0.1 aşamasında olan TSharp GO için planlanan gelecekteki geliştirmeler:
+Şu an v0.2 aşamasında olan TSharp GO için planlanan gelecekteki geliştirmeler:
 
 * Görsel Hata Ayıklayıcı (Visual Debugger): Kodun adım adım (step-by-step) çalıştırılabildiği ve bellek durumunun anlık izlenebildiği bir debug arayüzü.
 .
