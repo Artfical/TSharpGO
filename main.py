@@ -4,15 +4,29 @@ TSharp GO - TSharp Geliştirme Ortamı
 GNU AGPL v3 Licensed
 """
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, font as tkfont
-import subprocess
-import threading
+import sys
 import os
 import re
 import shutil
+import threading
+import subprocess
 import webbrowser
 from pathlib import Path
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QSplitter, QPlainTextEdit, QListWidget, QListWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QFrame,
+    QFileDialog, QMessageBox, QDialog
+)
+from PyQt6.QtCore import (
+    Qt, QTimer, QThread, pyqtSignal, QSize, QRect
+)
+from PyQt6.QtGui import (
+    QFont, QColor, QPainter, QTextCharFormat,
+    QSyntaxHighlighter, QTextCursor, QAction,
+    QPalette
+)
 
 # ─────────────────────────────────────────────────────────────────────
 # TEMA
@@ -30,8 +44,6 @@ THEMES = {
         "fg_faint":     "#484f58",
         "accent":       "#1f6feb",
         "accent_hover": "#388bfd",
-        "tab_active":   "#0d1117",
-        "tab_inactive": "#161b22",
         "sel_bg":       "#1f3a5f",
         "cursor":       "#e6edf3",
         "line_no":      "#484f58",
@@ -43,9 +55,6 @@ THEMES = {
         "run_hover":    "#2ea043",
         "compile_bg":   "#1f6feb",
         "compile_hover":"#388bfd",
-        "err_bg":       "#161b22",
-        "err_border":   "#30363d",
-        # syntax
         "syn_keyword":  "#ff7b72",
         "syn_string":   "#a5d6ff",
         "syn_number":   "#79c0ff",
@@ -54,7 +63,6 @@ THEMES = {
         "syn_builtin":  "#ffa657",
         "syn_operator": "#ff7b72",
         "syn_boolean":  "#79c0ff",
-        # diagnostics
         "diag_error":   "#f85149",
         "diag_warning": "#d29922",
         "diag_info":    "#3fb950",
@@ -72,8 +80,6 @@ THEMES = {
         "fg_faint":     "#afb8c1",
         "accent":       "#0969da",
         "accent_hover": "#0550ae",
-        "tab_active":   "#ffffff",
-        "tab_inactive": "#f6f8fa",
         "sel_bg":       "#dbeafe",
         "cursor":       "#1f2328",
         "line_no":      "#afb8c1",
@@ -85,9 +91,6 @@ THEMES = {
         "run_hover":    "#2ea043",
         "compile_bg":   "#0969da",
         "compile_hover":"#0550ae",
-        "err_bg":       "#f6f8fa",
-        "err_border":   "#d0d7de",
-        # syntax
         "syn_keyword":  "#cf222e",
         "syn_string":   "#0a3069",
         "syn_number":   "#0550ae",
@@ -96,7 +99,6 @@ THEMES = {
         "syn_builtin":  "#953800",
         "syn_operator": "#cf222e",
         "syn_boolean":  "#0550ae",
-        # diagnostics
         "diag_error":   "#cf222e",
         "diag_warning": "#9a6700",
         "diag_info":    "#1a7f37",
@@ -105,12 +107,12 @@ THEMES = {
 }
 
 # ─────────────────────────────────────────────────────────────────────
-# T# SÖZ DIZIMI TANIMALARI
+# T# SÖZ DİZİMİ TANIMLAMALARI
 # ─────────────────────────────────────────────────────────────────────
 TSHARP_KEYWORDS = [
     "degisken", "liste", "sozluk", "fonksiyon", "dondur", "son",
     "eger", "degilse", "dongu", "her", "icinde", "dur", "devam",
-    "girdi", "yazdır", "yazdır", "yaz", "kullan", "ag", "gui", "gui6",
+    "girdi", "yazdır", "yaz", "kullan", "ag", "gui", "gui6",
     "zip_olustur", "zip_ekle", "zip_listele", "zip_ac", "zip_cikar", "zip_sil",
     "klasor_olustur", "gpio_baslat", "gpio_kapat", "gpio_mod", "gpio_yaz",
     "gpio_oku", "gpio_yukari_cek", "gpio_asagi_cek", "gpio_kesme",
@@ -163,102 +165,68 @@ def analyze_tsharp(code: str) -> list:
     """Returns list of (line_no, severity, message) tuples."""
     diagnostics = []
     lines = code.split("\n")
-
-    open_blocks    = []  # stack: ("eger"/"dongu"/"her"/"fonksiyon", line_no)
-    declared_vars  = set()
+    open_blocks = []
+    declared_vars = set()
     declared_funcs = set()
-
     KEYWORD_SET = set(TSHARP_KEYWORDS)
     BUILTIN_SET = set(TSHARP_BUILTINS)
     BOOLEAN_SET = set(TSHARP_BOOLEANS)
     ALL_KNOWN   = KEYWORD_SET | BUILTIN_SET | BOOLEAN_SET
-
-    # Çok satırlı liste/sozluk takibi
-    ml_open_char  = None  # '[' veya '{'
-    ml_close_char = None  # ']' veya '}'
-    ml_depth      = 0
+    ml_open_char = ml_close_char = None
+    ml_depth = 0
 
     for i, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
-
-        # Yorum satırı veya boş satır
         if line.startswith("//") or line == "":
             continue
-
-        # Yorum kısmını temizle (string içindeki // ignore et)
         if "//" in line:
-            in_str   = False
-            str_char = None
+            in_str = False; str_char = None
             for ci, ch in enumerate(line):
                 if not in_str and ch in ('"', "'"):
-                    in_str   = True
-                    str_char = ch
+                    in_str = True; str_char = ch
                 elif in_str and ch == str_char:
                     in_str = False
-                elif not in_str and ch == '/' and ci + 1 < len(line) and line[ci+1] == '/':
-                    line = line[:ci].strip()
-                    break
-
-        # Çok satırlı liste/sozluk devam satırı — sadece parantez say, başka kontrol yapma
+                elif not in_str and ch == '/' and ci+1 < len(line) and line[ci+1] == '/':
+                    line = line[:ci].strip(); break
         if ml_open_char is not None:
             for ch in line:
-                if ch == ml_open_char:
-                    ml_depth += 1
-                elif ch == ml_close_char:
-                    ml_depth -= 1
+                if ch == ml_open_char: ml_depth += 1
+                elif ch == ml_close_char: ml_depth -= 1
             if ml_depth <= 0:
-                ml_open_char  = None
-                ml_close_char = None
-                ml_depth      = 0
+                ml_open_char = ml_close_char = None; ml_depth = 0
             continue
-
-        # Açılmamış string kontrolü
-        quote_count_d = line.count('"') - line.count('\\"')
-        quote_count_s = line.count("'") - line.count("\\'")
-        if quote_count_d % 2 != 0:
+        qd = line.count('"') - line.count('\\"')
+        qs = line.count("'") - line.count("\\'")
+        if qd % 2 != 0:
             diagnostics.append((i, "error", 'Kapatılmamış çift tırnak (") tespit edildi.'))
-        if quote_count_s % 2 != 0:
+        if qs % 2 != 0:
             diagnostics.append((i, "error", "Kapatılmamış tek tırnak (') tespit edildi."))
-
         tokens = line.split()
-        if not tokens:
-            continue
-
-        # Satır sonu ':' T#'da blok başlangıcı olarak da kullanılabilir — temizle
+        if not tokens: continue
         cmd = tokens[0].rstrip(":")
 
-        # Blok açan komutlar
         if cmd in ("eger", "dongu", "her", "fonksiyon"):
             if cmd == "eger" and len(tokens) < 2:
                 diagnostics.append((i, "error", "'eger' komutu bir koşul gerektirir."))
             if cmd == "dongu" and len(tokens) < 2:
                 diagnostics.append((i, "error", "'dongu' komutu bir koşul gerektirir."))
-            if cmd == "her":
-                clean_tokens = [t.rstrip(":") for t in tokens]
-                if "icinde" not in clean_tokens:
-                    diagnostics.append((i, "error",
-                        "'her' döngüsü 'icinde' anahtar kelimesini gerektirir. Örnek: her eleman icinde liste"))
+            if cmd == "her" and "icinde" not in [t.rstrip(":") for t in tokens]:
+                diagnostics.append((i, "error",
+                    "'her' döngüsü 'icinde' anahtar kelimesini gerektirir. Örnek: her eleman icinde liste"))
             if cmd == "fonksiyon":
                 if len(tokens) < 2:
                     diagnostics.append((i, "error", "'fonksiyon' bir isim gerektirir."))
                 else:
-                    fname = tokens[1].split("(")[0]
-                    declared_funcs.add(fname)
+                    declared_funcs.add(tokens[1].split("(")[0])
             open_blocks.append((cmd, i))
-
-        # 'son' kapama
         elif cmd == "son":
             if not open_blocks:
                 diagnostics.append((i, "error", "Eşleşmeyen 'son': Açık bir blok bulunamadı."))
             else:
                 open_blocks.pop()
-
-        # 'degilse' kontrolü
         elif cmd == "degilse":
             if not open_blocks or open_blocks[-1][0] != "eger":
                 diagnostics.append((i, "error", "'degilse' yalnızca 'eger' bloğunun ardından gelebilir."))
-
-        # Değişken tanımlama
         elif cmd == "degisken":
             if len(tokens) < 2:
                 diagnostics.append((i, "error", "'degisken' komutu bir isim gerektirir."))
@@ -268,8 +236,6 @@ def analyze_tsharp(code: str) -> list:
                     diagnostics.append((i, "warning",
                         f"'{vname}' değişkeni atama olmadan tanımlanmış olabilir. '=' operatörü bekleniyor."))
                 declared_vars.add(vname)
-
-        # Liste tanımlama — çok satırlı desteği ile
         elif cmd == "liste":
             if len(tokens) < 2:
                 diagnostics.append((i, "error", "'liste' komutu bir isim gerektirir."))
@@ -280,16 +246,9 @@ def analyze_tsharp(code: str) -> list:
                     if not rest.startswith("["):
                         diagnostics.append((i, "warning", "Liste tanımlaması '[' ile başlamalıdır."))
                     else:
-                        open_br  = rest.count("[")
-                        close_br = rest.count("]")
-                        if open_br != close_br:
-                            # Çok satırlı liste — kapanana kadar devam satırlarını izle
-                            ml_open_char  = "["
-                            ml_close_char = "]"
-                            ml_depth      = open_br - close_br
-                        # open_br == close_br ise tek satırda tamam, hata yok
-
-        # Sözlük tanımlama — çok satırlı desteği ile
+                        ob, cb = rest.count("["), rest.count("]")
+                        if ob != cb:
+                            ml_open_char = "["; ml_close_char = "]"; ml_depth = ob - cb
         elif cmd == "sozluk":
             if len(tokens) < 2:
                 diagnostics.append((i, "error", "'sozluk' komutu bir isim gerektirir."))
@@ -300,39 +259,22 @@ def analyze_tsharp(code: str) -> list:
                     if not rest.startswith("{"):
                         diagnostics.append((i, "warning", "Sözlük tanımlaması '{' ile başlamalıdır."))
                     else:
-                        open_br  = rest.count("{")
-                        close_br = rest.count("}")
-                        if open_br != close_br:
-                            # Çok satırlı sözlük — kapanana kadar devam satırlarını izle
-                            ml_open_char  = "{"
-                            ml_close_char = "}"
-                            ml_depth      = open_br - close_br
-                        # open_br == close_br ise tek satırda tamam, hata yok
-
-        # yazdır / yaz
+                        ob, cb = rest.count("{"), rest.count("}")
+                        if ob != cb:
+                            ml_open_char = "{"; ml_close_char = "}"; ml_depth = ob - cb
         elif cmd in ("yazdır", "yaz"):
-            pass  # boş yazdır geçerli
-
-        # girdi
+            pass
         elif cmd == "girdi":
             if len(tokens) < 2:
                 diagnostics.append((i, "error", "'girdi' komutu bir değişken ismi gerektirir."))
             else:
                 declared_vars.add(tokens[1])
-
-        # dondur — fonksiyon dışında kullanım
         elif cmd == "dondur":
-            in_func = any(b[0] == "fonksiyon" for b in open_blocks)
-            if not in_func:
+            if not any(b[0] == "fonksiyon" for b in open_blocks):
                 diagnostics.append((i, "warning", "'dondur' komutu bir fonksiyon dışında kullanılmış."))
-
-        # dur / devam — döngü dışında kullanım
         elif cmd in ("dur", "devam"):
-            in_loop = any(b[0] in ("dongu", "her") for b in open_blocks)
-            if not in_loop:
+            if not any(b[0] in ("dongu", "her") for b in open_blocks):
                 diagnostics.append((i, "warning", f"'{cmd}' komutu bir döngü dışında kullanılmış."))
-
-        # kullan
         elif cmd == "kullan":
             if len(tokens) < 2:
                 diagnostics.append((i, "error", "'kullan' komutu bir modül ismi gerektirir. Örnek: kullan ag"))
@@ -341,8 +283,6 @@ def analyze_tsharp(code: str) -> list:
                 if modul not in ("ag", "gui", "gui6"):
                     diagnostics.append((i, "warning",
                         f"Bilinmeyen modül: '{modul}'. Geçerli modüller: ag, gui, gui6"))
-
-        # Bilinmeyen komut / tanımlanmamış değişken
         elif cmd not in ALL_KNOWN:
             if re.match(r'^[a-zA-Z_\u00c0-\u024f][a-zA-Z0-9_\u00c0-\u024f]*$', cmd):
                 if cmd not in declared_vars and cmd not in declared_funcs:
@@ -350,935 +290,836 @@ def analyze_tsharp(code: str) -> list:
                         f"Bilinmeyen komut veya tanımlanmamış değişken: '{cmd}'. "
                         f"Bir değişken ise 'degisken {cmd} = ...' ile tanımlayın."))
 
-        # Python tarzı print() kullanımı
         if re.search(r'\bprint\s*\(', line):
             diagnostics.append((i, "warning",
                 "Python 'print()' kullanımı tespit edildi. T#'da 'yazdır' veya 'yaz' kullanın."))
-
-        # Python tarzı for/if/while kullanımı
         if re.match(r'^(for|if|while|def|class|import|from|return)\b', line):
-            python_kw = tokens[0]
-            tsharp_eq = {"for": "her ... icinde ...", "if": "eger", "while": "dongu",
-                         "def": "fonksiyon", "return": "dondur", "import": "kullan"}
-            eq   = tsharp_eq.get(python_kw, "")
+            pkw = tokens[0]
+            eq = {"for": "her ... icinde ...", "if": "eger", "while": "dongu",
+                  "def": "fonksiyon", "return": "dondur", "import": "kullan"}.get(pkw, "")
             hint = f" T#'da '{eq}' kullanın." if eq else ""
-            diagnostics.append((i, "warning",
-                f"Python anahtar kelimesi '{python_kw}' tespit edildi.{hint}"))
+            diagnostics.append((i, "warning", f"Python anahtar kelimesi '{pkw}' tespit edildi.{hint}"))
 
-    # Kapanmamış bloklar
     for blk_type, blk_line in open_blocks:
-        diagnostics.append((blk_line, "error",
-            f"'{blk_type}' bloğu kapatılmamış: 'son' eksik."))
+        diagnostics.append((blk_line, "error", f"'{blk_type}' bloğu kapatılmamış: 'son' eksik."))
 
     return diagnostics
 
 
 # ─────────────────────────────────────────────────────────────────────
-# ANA IDE SINIFI
+# SYNTAX HIGHLIGHTER
 # ─────────────────────────────────────────────────────────────────────
-class TSharpGO:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("TSharp GO")
-        self.root.geometry("1400x850")
-        self.root.minsize(900, 600)
-        
+class TSharpHighlighter(QSyntaxHighlighter):
+    def __init__(self, document, theme):
+        super().__init__(document)
+        self.theme = theme
+        self._diag_lines = {}
+        self._rules = []
+        self._comment_fmt = None
+        self._string_fmt = None
+        self._diag_fmt = {}
+        self._build_rules()
+
+    def _fmt(self, color, italic=False, underline=False, ul_color=None):
+        f = QTextCharFormat()
+        f.setForeground(QColor(color))
+        if italic: f.setFontItalic(True)
+        if underline:
+            f.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+            if ul_color: f.setUnderlineColor(QColor(ul_color))
+        return f
+
+    def _build_rules(self):
+        T = self.theme
+        self._rules = []
+        self._comment_fmt = self._fmt(T["syn_comment"], italic=True)
+        self._string_fmt  = self._fmt(T["syn_string"])
+
+        self._rules.append((re.compile(r'\b\d+\.?\d*\b'), self._fmt(T["syn_number"])))
+        self._rules.append((re.compile(r'(\+\+|--|==|!=|<=|>=|[+\-*/%=<>!])'),
+                             self._fmt(T["syn_operator"])))
+
+        kw = r'\b(' + '|'.join(re.escape(k) for k in TSHARP_KEYWORDS) + r')\b'
+        bl = r'\b(' + '|'.join(re.escape(k) for k in TSHARP_BUILTINS) + r')\b'
+        bo = r'\b(' + '|'.join(re.escape(k) for k in TSHARP_BOOLEANS) + r')\b'
+        self._rules.append((re.compile(kw), self._fmt(T["syn_keyword"])))
+        self._rules.append((re.compile(bl), self._fmt(T["syn_builtin"])))
+        self._rules.append((re.compile(bo), self._fmt(T["syn_boolean"])))
+
+        self._diag_fmt = {
+            "error":   self._fmt(T["diag_error"],   underline=True, ul_color=T["diag_error"]),
+            "warning": self._fmt(T["diag_warning"], underline=True, ul_color=T["diag_warning"]),
+            "info":    self._fmt(T["diag_info"],    underline=True, ul_color=T["diag_info"]),
+        }
+
+    def set_theme(self, theme):
+        self.theme = theme
+        self._build_rules()
+        self.rehighlight()
+
+    def set_diagnostics(self, diag_list):
+        self._diag_lines = {ln - 1: sev for ln, sev, _ in diag_list}
+        self.rehighlight()
+
+    def highlightBlock(self, text):
+        block_num = self.currentBlock().blockNumber()
+
+        # Yorum başlangıcını bul
+        comment_start = -1
+        in_str = False; str_char = None
+        for ci, ch in enumerate(text):
+            if not in_str and ch in ('"', "'"):
+                in_str = True; str_char = ch
+            elif in_str and ch == str_char:
+                in_str = False
+            elif not in_str and ch == '/' and ci+1 < len(text) and text[ci+1] == '/':
+                comment_start = ci; break
+
+        # String'ler
+        for m in re.finditer(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', text):
+            if comment_start >= 0 and m.start() >= comment_start:
+                break
+            self.setFormat(m.start(), m.end() - m.start(), self._string_fmt)
+
+        # Diğer kurallar
+        for pattern, fmt in self._rules:
+            for m in pattern.finditer(text):
+                if comment_start >= 0 and m.start() >= comment_start:
+                    break
+                self.setFormat(m.start(), m.end() - m.start(), fmt)
+
+        # Yorum (son — üzerine yazar)
+        if comment_start >= 0:
+            self.setFormat(comment_start, len(text) - comment_start, self._comment_fmt)
+
+        # Diagnostics altı çizgi
+        if block_num in self._diag_lines and text.strip():
+            sev = self._diag_lines[block_num]
+            if sev in self._diag_fmt:
+                self.setFormat(0, len(text), self._diag_fmt[sev])
+
+
+# ─────────────────────────────────────────────────────────────────────
+# SATIR NUMARASI PANELİ
+# ─────────────────────────────────────────────────────────────────────
+class LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def sizeHint(self):
+        return QSize(self.editor._line_area_width(), 0)
+
+    def paintEvent(self, event):
+        self.editor._paint_line_numbers(event)
+
+
+class CodeEditor(QPlainTextEdit):
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self._line_area = LineNumberArea(self)
+        self.blockCountChanged.connect(self._update_line_area_width)
+        self.updateRequest.connect(self._update_line_area)
+        self._update_line_area_width()
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.setTabStopDistance(40)
+
+    def _line_area_width(self):
+        digits = max(1, len(str(max(1, self.blockCount()))))
+        return 10 + self.fontMetrics().horizontalAdvance('9') * (digits + 1)
+
+    def _update_line_area_width(self):
+        self.setViewportMargins(self._line_area_width(), 0, 0, 0)
+
+    def _update_line_area(self, rect, dy):
+        if dy:
+            self._line_area.scroll(0, dy)
+        else:
+            self._line_area.update(0, rect.y(), self._line_area.width(), rect.height())
+        if rect.contains(self.viewport().rect()):
+            self._update_line_area_width()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        self._line_area.setGeometry(QRect(cr.left(), cr.top(),
+                                          self._line_area_width(), cr.height()))
+
+    def _paint_line_numbers(self, event):
+        T = self.theme
+        painter = QPainter(self._line_area)
+        painter.fillRect(event.rect(), QColor(T["sidebar_bg"]))
+        painter.setPen(QColor(T["line_no"]))
+        painter.setFont(self.font())
+
+        block = self.firstVisibleBlock()
+        block_num = block.blockNumber()
+        top    = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + int(self.blockBoundingRect(block).height())
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                painter.drawText(0, top,
+                                 self._line_area.width() - 4,
+                                 self.fontMetrics().height(),
+                                 Qt.AlignmentFlag.AlignRight,
+                                 str(block_num + 1))
+            block = block.next()
+            top = bottom
+            bottom = top + int(self.blockBoundingRect(block).height())
+            block_num += 1
+
+    def set_theme(self, theme):
+        self.theme = theme
+        self._line_area.update()
+
+    def get_cursor_pos(self):
+        c = self.textCursor()
+        return c.blockNumber() + 1, c.columnNumber() + 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# RUN THREAD
+# ─────────────────────────────────────────────────────────────────────
+class RunThread(QThread):
+    output   = pyqtSignal(str, str)
+    finished = pyqtSignal(int)
+
+    def __init__(self, cmd):
+        super().__init__()
+        self.cmd = cmd
+
+    def run(self):
+        try:
+            proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, encoding="utf-8", errors="replace")
+            def rd(stream, tag):
+                for line in iter(stream.readline, ""):
+                    self.output.emit(line, tag)
+                stream.close()
+            t1 = threading.Thread(target=rd, args=(proc.stdout, "stdout"), daemon=True)
+            t2 = threading.Thread(target=rd, args=(proc.stderr, "stderr"), daemon=True)
+            t1.start(); t2.start(); t1.join(); t2.join()
+            self.finished.emit(proc.wait())
+        except Exception as ex:
+            self.output.emit(f"\n[Hata: {ex}]\n", "stderr")
+            self.finished.emit(1)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DOWNLOAD POPUP
+# ─────────────────────────────────────────────────────────────────────
+class DownloadPopup(QDialog):
+    def __init__(self, parent, title, message, btn_text, url, T):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedWidth(440)
+        self.setModal(True)
+        self.setStyleSheet(f"QDialog {{ background: {T['panel_bg']}; }} QLabel {{ color: {T['fg']}; }}")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        # Lisans bandı
+        bar = QFrame()
+        bar.setStyleSheet(f"background: {T['sidebar_bg']};")
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(12, 6, 12, 6)
+        lic = QLabel("TSharp ve diğer tüm Artfical ürünlerini kullanarak GNU AGPL v3 lisansını kabul edersiniz.")
+        lic.setStyleSheet(f"color: {T['fg_dim']}; font-size: 9px;")
+        lic.setWordWrap(True)
+        bl.addWidget(lic)
+        gnu = QPushButton("GNU AGPL v3")
+        gnu.setStyleSheet(f"QPushButton {{ background: transparent; color: {T['accent']}; border: none; font-size: 9px; }}")
+        gnu.setCursor(Qt.CursorShape.PointingHandCursor)
+        gnu.clicked.connect(lambda: webbrowser.open("https://www.gnu.org/licenses/agpl-3.0.html"))
+        bl.addWidget(gnu)
+        lay.addWidget(bar)
+
+        # İçerik
+        cnt = QWidget()
+        cnt.setStyleSheet(f"background: {T['panel_bg']};")
+        cl = QVBoxLayout(cnt)
+        cl.setContentsMargins(24, 20, 24, 20)
+        cl.setSpacing(10)
+        tl = QLabel(title)
+        tl.setStyleSheet(f"color: {T['fg']}; font-weight: bold; font-size: 11px;")
+        cl.addWidget(tl)
+        ml = QLabel(message)
+        ml.setStyleSheet(f"color: {T['fg']}; font-size: 10px;")
+        ml.setWordWrap(True)
+        cl.addWidget(ml)
+        db = QPushButton(btn_text)
+        db.setStyleSheet(f"QPushButton {{ background: {T['run_bg']}; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; font-weight: bold; }} QPushButton:hover {{ background: {T['run_hover']}; }}")
+        db.setCursor(Qt.CursorShape.PointingHandCursor)
+        db.clicked.connect(lambda: [webbrowser.open(url), self.accept()])
+        cl.addWidget(db, alignment=Qt.AlignmentFlag.AlignLeft)
+        cb = QPushButton("Kapat")
+        cb.setStyleSheet(f"QPushButton {{ background: {T['btn_bg']}; color: {T['btn_fg']}; border: none; padding: 4px 10px; border-radius: 4px; }} QPushButton:hover {{ background: {T['btn_hover']}; }}")
+        cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        cb.clicked.connect(self.reject)
+        cl.addWidget(cb, alignment=Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(cnt)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ANA IDE
+# ─────────────────────────────────────────────────────────────────────
+class TSharpGO(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("TSharp GO")
+        self.resize(1400, 850)
+        self.setMinimumSize(900, 600)
+
         self.current_theme = "dark"
         self.T = THEMES["dark"]
-        
         self.current_file = None
         self.saved = True
         self.diagnostics = []
-        self.diag_vars = {}       # line -> list of diag
-        self.highlight_job = None
-        self.diag_job = None
-        
-        self._setup_fonts()
+        self._run_thread = None
+
+        self._hl_timer   = QTimer(self); self._hl_timer.setSingleShot(True)
+        self._diag_timer = QTimer(self); self._diag_timer.setSingleShot(True)
+        self._hl_timer.timeout.connect(self._highlight_syntax)
+        self._diag_timer.timeout.connect(self._run_diagnostics)
+
         self._build_ui()
+        self._build_menu()
         self._apply_theme()
         self._load_sidebar_dir(str(Path.home()))
-        
-        # İlk boş dosya
         self._new_file()
-    
-    # ─────────────────────────────────────
-    # FONTLAR
-    # ─────────────────────────────────────
-    def _setup_fonts(self):
-        self.font_editor   = tkfont.Font(family="Courier New", size=13)
-        self.font_ui       = tkfont.Font(family="Segoe UI",    size=10)
-        self.font_ui_bold  = tkfont.Font(family="Segoe UI",    size=10, weight="bold")
-        self.font_sidebar  = tkfont.Font(family="Segoe UI",    size=9)
-        self.font_terminal = tkfont.Font(family="Courier New", size=11)
-        self.font_diag     = tkfont.Font(family="Segoe UI",    size=9)
-        self.font_lineno   = tkfont.Font(family="Courier New", size=13)
-        self.font_title    = tkfont.Font(family="Segoe UI",    size=10, weight="bold")
-    
-    # ─────────────────────────────────────
-    # UI KURULUM
-    # ─────────────────────────────────────
+
+    # ── UI ──────────────────────────────────────────────────────────
     def _build_ui(self):
-        T = self.T
-        
-        # ── Menubar ──
-        self.menubar = tk.Menu(self.root, tearoff=0)
-        self.root.config(menu=self.menubar)
-        
-        file_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Dosya", menu=file_menu)
-        file_menu.add_command(label="Yeni",            command=self._new_file,   accelerator="Ctrl+N")
-        file_menu.add_command(label="Aç",              command=self._open_file,  accelerator="Ctrl+O")
-        file_menu.add_command(label="Kaydet",          command=self._save_file,  accelerator="Ctrl+S")
-        file_menu.add_command(label="Farklı Kaydet",   command=self._save_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Çıkış",           command=self.root.quit)
-        
-        edit_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Düzenle", menu=edit_menu)
-        edit_menu.add_command(label="Geri Al",    command=lambda: self.editor.event_generate("<<Undo>>"),  accelerator="Ctrl+Z")
-        edit_menu.add_command(label="Yinele",     command=lambda: self.editor.event_generate("<<Redo>>"),  accelerator="Ctrl+Y")
-        
-        view_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Görünüm", menu=view_menu)
-        view_menu.add_command(label="Karanlık Tema", command=lambda: self._switch_theme("dark"))
-        view_menu.add_command(label="Açık Tema",     command=lambda: self._switch_theme("light"))
-        
-        help_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Yardım", menu=help_menu)
-        help_menu.add_command(label="TSharp Hakkında", command=lambda: webbrowser.open("https://github.com/Artfical/TSharp"))
-        
-        # ── Klavye kisayollari ──
-        self.root.bind("<Control-n>", lambda e: self._new_file())
-        self.root.bind("<Control-o>", lambda e: self._open_file())
-        self.root.bind("<Control-s>", lambda e: self._save_file())
-        
-        # ── Toolbar ──
-        self.toolbar = tk.Frame(self.root, height=44)
-        self.toolbar.pack(side="top", fill="x")
-        self.toolbar.pack_propagate(False)
-        
-        # Sol grup: dosya butonları
-        left_bar = tk.Frame(self.toolbar)
-        left_bar.pack(side="left", padx=8, pady=6)
-        
-        self.btn_new  = self._tb_btn(left_bar, "Yeni",           self._new_file,  width=6)
-        self.btn_open = self._tb_btn(left_bar, "Aç",             self._open_file, width=6)
-        self.btn_save = self._tb_btn(left_bar, "Kaydet",         self._save_file, width=7)
-        
-        # Orta: dosya adı
-        self.title_var = tk.StringVar(value="adsiz.tsh")
-        title_lbl = tk.Label(self.toolbar, textvariable=self.title_var, font=self.font_title)
-        title_lbl.pack(side="left", padx=20)
-        self.title_label = title_lbl
-        
-        # Sağ grup: tema + çalıştır + derle
-        right_bar = tk.Frame(self.toolbar)
-        right_bar.pack(side="right", padx=8, pady=6)
-        
-        self.btn_theme   = self._tb_btn(right_bar, "Açık Tema",  self._toggle_theme, width=10)
-        
-        sep = tk.Frame(right_bar, width=1, height=24)
-        sep.pack(side="left", padx=6)
-        self.sep_toolbar = sep
-        
-        self.btn_compile = self._tb_btn(right_bar, "Derle",  self._compile,  width=7, kind="compile")
-        self.btn_run     = self._tb_btn(right_bar, "Çalıştır", self._run,    width=9, kind="run")
-        
-        # ── Ana icerik alani ──
-        self.paned_main = tk.PanedWindow(self.root, orient="horizontal", sashwidth=4, sashrelief="flat")
-        self.paned_main.pack(side="top", fill="both", expand=True)
-        
+        central = QWidget()
+        self.setCentralWidget(central)
+        root_lay = QVBoxLayout(central)
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        root_lay.setSpacing(0)
+
+        # Toolbar
+        self._build_toolbar(root_lay)
+
+        # Ana splitter
+        self.splitter_main = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter_main.setHandleWidth(4)
+        root_lay.addWidget(self.splitter_main)
+
         # Sidebar
-        self.sidebar = tk.Frame(self.paned_main, width=210)
-        self.paned_main.add(self.sidebar, minsize=140)
-        
-        sidebar_hdr = tk.Frame(self.sidebar, height=32)
-        sidebar_hdr.pack(fill="x")
-        sidebar_hdr.pack_propagate(False)
-        sidebar_title = tk.Label(sidebar_hdr, text="DOSYA GEZGİNİ", font=self.font_ui_bold)
-        sidebar_title.pack(side="left", padx=10, pady=6)
-        self.sidebar_title_lbl = sidebar_title
-        
-        # Sidebar treeview
-        self.file_tree = ttk.Treeview(self.sidebar, show="tree", selectmode="browse")
-        self.file_tree.pack(fill="both", expand=True, pady=(0, 0))
-        self.file_tree.bind("<Double-1>", self._sidebar_double_click)
-        self.file_tree.bind("<Button-1>", self._sidebar_click)
-        
-        # Orta: editor + diagnostics
-        self.center_paned = tk.PanedWindow(self.paned_main, orient="horizontal", sashwidth=4, sashrelief="flat")
-        self.paned_main.add(self.center_paned, minsize=400)
-        
-        # Editör bölümü (lineno + editor)
-        editor_outer = tk.Frame(self.center_paned)
-        self.center_paned.add(editor_outer, minsize=350)
-        
-        # Editör / terminal dikey
-        self.editor_paned = tk.PanedWindow(editor_outer, orient="vertical", sashwidth=4, sashrelief="flat")
-        self.editor_paned.pack(fill="both", expand=True)
-        
-        # Editör frame
-        self.editor_frame = tk.Frame(self.editor_paned)
-        self.editor_paned.add(self.editor_frame, minsize=200)
-        
-        # Satır numaraları
-        self.lineno = tk.Text(self.editor_frame, width=4, state="disabled",
-                              padx=6, takefocus=0, bd=0, wrap="none",
-                              cursor="arrow")
-        self.lineno.pack(side="left", fill="y")
-        
-        # Editör scrollbar
-        editor_scroll = tk.Scrollbar(self.editor_frame, orient="vertical")
-        editor_scroll.pack(side="right", fill="y")
-        
-        editor_hscroll = tk.Scrollbar(self.editor_frame, orient="horizontal")
-        editor_hscroll.pack(side="bottom", fill="x")
-        
-        self.editor = tk.Text(self.editor_frame, wrap="none", undo=True, maxundo=-1,
-                              bd=0, padx=10, pady=8,
-                              yscrollcommand=self._sync_scroll,
-                              xscrollcommand=editor_hscroll.set,
-                              insertwidth=2, tabs=("40",))
-        self.editor.pack(side="left", fill="both", expand=True)
-        
-        editor_scroll.config(command=self._on_scroll)
-        editor_hscroll.config(command=self.editor.xview)
-        self.editor_vscroll = editor_scroll
-        
-        self.editor.bind("<KeyRelease>", self._on_key_release)
-        self.editor.bind("<ButtonRelease>", self._update_lineno)
-        
-        # Terminal frame
-        self.terminal_frame = tk.Frame(self.editor_paned, height=180)
-        self.editor_paned.add(self.terminal_frame, minsize=100)
-        
-        term_hdr = tk.Frame(self.terminal_frame, height=28)
-        term_hdr.pack(fill="x")
-        term_hdr.pack_propagate(False)
-        tk.Label(term_hdr, text="TERMINAL", font=self.font_ui_bold).pack(side="left", padx=10, pady=4)
-        self.term_hdr = term_hdr
-        
-        btn_clear = tk.Button(term_hdr, text="Temizle", font=self.font_sidebar,
-                              bd=0, padx=8, pady=2, cursor="hand2",
-                              command=self._clear_terminal)
-        btn_clear.pack(side="right", padx=8, pady=3)
-        self.btn_clear_term = btn_clear
-        
-        term_scroll = tk.Scrollbar(self.terminal_frame)
-        term_scroll.pack(side="right", fill="y")
-        
-        self.terminal = tk.Text(self.terminal_frame, state="disabled", wrap="word",
-                                bd=0, padx=10, pady=8,
-                                yscrollcommand=term_scroll.set)
-        self.terminal.pack(fill="both", expand=True)
-        term_scroll.config(command=self.terminal.yview)
-        
-        # Diagnostics panel (sağ)
-        self.diag_frame = tk.Frame(self.center_paned, width=220)
-        self.center_paned.add(self.diag_frame, minsize=180)
-        
-        diag_hdr = tk.Frame(self.diag_frame, height=32)
-        diag_hdr.pack(fill="x")
-        diag_hdr.pack_propagate(False)
-        tk.Label(diag_hdr, text="SORUNLAR", font=self.font_ui_bold).pack(side="left", padx=10, pady=6)
-        self.diag_hdr = diag_hdr
-        self.diag_title_lbl = diag_hdr.winfo_children()[0]
-        
-        self.diag_count_var = tk.StringVar(value="")
-        diag_count_lbl = tk.Label(diag_hdr, textvariable=self.diag_count_var, font=self.font_sidebar)
-        diag_count_lbl.pack(side="right", padx=8)
-        self.diag_count_lbl = diag_count_lbl
-        
-        diag_scroll = tk.Scrollbar(self.diag_frame)
-        diag_scroll.pack(side="right", fill="y")
-        
-        self.diag_list = tk.Listbox(self.diag_frame, bd=0, activestyle="none",
-                                     selectmode="browse", yscrollcommand=diag_scroll.set)
-        self.diag_list.pack(fill="both", expand=True)
-        diag_scroll.config(command=self.diag_list.yview)
-        self.diag_list.bind("<<ListboxSelect>>", self._diag_goto_line)
-        
-        # Durum cubugu
-        self.statusbar = tk.Frame(self.root, height=22)
-        self.statusbar.pack(side="bottom", fill="x")
-        self.statusbar.pack_propagate(False)
-        
-        self.status_var = tk.StringVar(value="Hazır")
-        status_lbl = tk.Label(self.statusbar, textvariable=self.status_var, font=self.font_sidebar, anchor="w")
-        status_lbl.pack(side="left", padx=10)
-        self.status_lbl = status_lbl
-        
-        self.cursor_var = tk.StringVar(value="Satır 1, Sütun 1")
-        cursor_lbl = tk.Label(self.statusbar, textvariable=self.cursor_var, font=self.font_sidebar, anchor="e")
-        cursor_lbl.pack(side="right", padx=10)
-        self.cursor_lbl = cursor_lbl
-        
-        # Tüm widget referanslari (tema icin)
-        self._all_widgets = {
-            "root": self.root,
-            "toolbar": self.toolbar,
-            "left_bar": left_bar,
-            "right_bar": right_bar,
-            "sidebar": self.sidebar,
-            "sidebar_hdr": sidebar_hdr,
-            "center_paned": self.center_paned,
-            "paned_main": self.paned_main,
-            "editor_outer": editor_outer,
-            "editor_paned": self.editor_paned,
-            "editor_frame": self.editor_frame,
-            "terminal_frame": self.terminal_frame,
-            "term_hdr": term_hdr,
-            "diag_frame": self.diag_frame,
-            "diag_hdr": diag_hdr,
-            "statusbar": self.statusbar,
-        }
-    
-    def _tb_btn(self, parent, text, cmd, width=8, kind="normal"):
-        btn = tk.Button(parent, text=text, command=cmd, font=self.font_ui,
-                        bd=0, padx=10, pady=3, cursor="hand2", width=width)
-        btn.pack(side="left", padx=3)
-        btn._kind = kind
-        
-        def on_enter(e):
-            T = self.T
-            if kind == "run":     btn.config(bg=T["run_hover"])
-            elif kind == "compile": btn.config(bg=T["compile_hover"])
-            else:                  btn.config(bg=T["btn_hover"])
-        
-        def on_leave(e):
-            T = self.T
-            if kind == "run":     btn.config(bg=T["run_bg"])
-            elif kind == "compile": btn.config(bg=T["compile_bg"])
-            else:                  btn.config(bg=T["btn_bg"])
-        
-        btn.bind("<Enter>", on_enter)
-        btn.bind("<Leave>", on_leave)
-        return btn
-    
-    # ─────────────────────────────────────
-    # TEMA
-    # ─────────────────────────────────────
+        self._build_sidebar()
+
+        # Orta: editör+terminal | diagnostics
+        center_sp = QSplitter(Qt.Orientation.Horizontal)
+        center_sp.setHandleWidth(4)
+        self.splitter_center = center_sp
+
+        edit_sp = QSplitter(Qt.Orientation.Vertical)
+        edit_sp.setHandleWidth(4)
+        self.splitter_edit = edit_sp
+
+        self._build_editor();   edit_sp.addWidget(self.editor_container)
+        self._build_terminal(); edit_sp.addWidget(self.terminal_container)
+        edit_sp.setStretchFactor(0, 3)
+        edit_sp.setStretchFactor(1, 1)
+
+        center_sp.addWidget(edit_sp)
+        center_sp.setStretchFactor(0, 4)
+
+        self._build_diag_panel()
+        center_sp.addWidget(self.diag_container)
+        center_sp.setStretchFactor(1, 1)
+
+        self.splitter_main.addWidget(center_sp)
+        self.splitter_main.setSizes([210, 1190])
+
+        self._build_statusbar()
+
+    def _build_toolbar(self, parent_lay):
+        self.toolbar_widget = QFrame()
+        self.toolbar_widget.setFixedHeight(44)
+        tl = QHBoxLayout(self.toolbar_widget)
+        tl.setContentsMargins(8, 6, 8, 6)
+        tl.setSpacing(4)
+
+        self.btn_new  = self._mkbtn("Yeni",      self._new_file)
+        self.btn_open = self._mkbtn("Aç",        self._open_file)
+        self.btn_save = self._mkbtn("Kaydet",    self._save_file)
+        for b in [self.btn_new, self.btn_open, self.btn_save]:
+            tl.addWidget(b)
+
+        self.title_label = QLabel("adsiz.tsh")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        tl.addWidget(self.title_label)
+        tl.addStretch()
+
+        self.btn_theme   = self._mkbtn("Açık Tema",  self._toggle_theme)
+        self.sep_frame   = QFrame(); self.sep_frame.setFrameShape(QFrame.Shape.VLine); self.sep_frame.setFixedWidth(1)
+        self.btn_compile = self._mkbtn("Derle",      self._compile,  kind="compile")
+        self.btn_run     = self._mkbtn("Çalıştır",   self._run,      kind="run")
+        for w in [self.btn_theme, self.sep_frame, self.btn_compile, self.btn_run]:
+            tl.addWidget(w)
+
+        parent_lay.addWidget(self.toolbar_widget)
+
+    def _mkbtn(self, text, slot, kind="normal"):
+        b = QPushButton(text)
+        b.setFont(QFont("Segoe UI", 10))
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setFixedHeight(28)
+        b.setProperty("kind", kind)
+        b.clicked.connect(slot)
+        return b
+
+    def _build_sidebar(self):
+        sw = QWidget()
+        sw.setMinimumWidth(140); sw.setMaximumWidth(350)
+        sl = QVBoxLayout(sw); sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
+
+        self.sidebar_hdr = QFrame(); self.sidebar_hdr.setFixedHeight(32)
+        hl = QHBoxLayout(self.sidebar_hdr); hl.setContentsMargins(10, 0, 0, 0)
+        self.sidebar_title = QLabel("DOSYA GEZGİNİ")
+        self.sidebar_title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hl.addWidget(self.sidebar_title)
+        sl.addWidget(self.sidebar_hdr)
+
+        self.file_tree = QTreeWidget()
+        self.file_tree.setHeaderHidden(True)
+        self.file_tree.setFont(QFont("Segoe UI", 9))
+        self.file_tree.itemDoubleClicked.connect(self._sidebar_double_click)
+        self.file_tree.itemExpanded.connect(self._on_tree_expand)
+        sl.addWidget(self.file_tree)
+
+        self.splitter_main.addWidget(sw)
+        self.sidebar_widget = sw
+
+    def _build_editor(self):
+        self.editor_container = QWidget()
+        el = QVBoxLayout(self.editor_container); el.setContentsMargins(0,0,0,0); el.setSpacing(0)
+        self.editor = CodeEditor(self.T)
+        self.editor.setFont(QFont("Courier New", 13))
+        self.editor.textChanged.connect(self._on_text_changed)
+        self.editor.cursorPositionChanged.connect(self._update_cursor_pos)
+        self.highlighter = TSharpHighlighter(self.editor.document(), self.T)
+        el.addWidget(self.editor)
+
+    def _build_terminal(self):
+        self.terminal_container = QWidget()
+        tl = QVBoxLayout(self.terminal_container); tl.setContentsMargins(0,0,0,0); tl.setSpacing(0)
+
+        self.term_hdr = QFrame(); self.term_hdr.setFixedHeight(28)
+        th = QHBoxLayout(self.term_hdr); th.setContentsMargins(10,0,8,0)
+        self.term_title_lbl = QLabel("TERMINAL")
+        self.term_title_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        th.addWidget(self.term_title_lbl); th.addStretch()
+        self.btn_clear_term = QPushButton("Temizle")
+        self.btn_clear_term.setFont(QFont("Segoe UI", 9))
+        self.btn_clear_term.setFixedHeight(22)
+        self.btn_clear_term.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_term.clicked.connect(self._clear_terminal)
+        th.addWidget(self.btn_clear_term)
+        tl.addWidget(self.term_hdr)
+
+        self.terminal = QPlainTextEdit()
+        self.terminal.setReadOnly(True)
+        self.terminal.setFont(QFont("Courier New", 11))
+        self.terminal.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        tl.addWidget(self.terminal)
+
+    def _build_diag_panel(self):
+        self.diag_container = QWidget()
+        self.diag_container.setMinimumWidth(180)
+        dl = QVBoxLayout(self.diag_container); dl.setContentsMargins(0,0,0,0); dl.setSpacing(0)
+
+        self.diag_hdr = QFrame(); self.diag_hdr.setFixedHeight(32)
+        dh = QHBoxLayout(self.diag_hdr); dh.setContentsMargins(10,0,8,0)
+        self.diag_title_lbl = QLabel("SORUNLAR")
+        self.diag_title_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        dh.addWidget(self.diag_title_lbl); dh.addStretch()
+        self.diag_count_lbl = QLabel("")
+        self.diag_count_lbl.setFont(QFont("Segoe UI", 9))
+        dh.addWidget(self.diag_count_lbl)
+        dl.addWidget(self.diag_hdr)
+
+        self.diag_list = QListWidget()
+        self.diag_list.setFont(QFont("Segoe UI", 9))
+        self.diag_list.itemClicked.connect(self._diag_goto_line)
+        dl.addWidget(self.diag_list)
+
+    def _build_statusbar(self):
+        sb = self.statusBar(); sb.setFixedHeight(22)
+        self.status_lbl = QLabel("Hazır"); self.status_lbl.setFont(QFont("Segoe UI", 9))
+        self.cursor_lbl = QLabel("Satır 1, Sütun 1"); self.cursor_lbl.setFont(QFont("Segoe UI", 9))
+        sb.addWidget(self.status_lbl)
+        sb.addPermanentWidget(self.cursor_lbl)
+        self.status_bar = sb
+
+    def _build_menu(self):
+        mb = self.menuBar()
+
+        fm = mb.addMenu("Dosya")
+        self._act(fm, "Yeni",          self._new_file,   "Ctrl+N")
+        self._act(fm, "Aç",            self._open_file,  "Ctrl+O")
+        self._act(fm, "Kaydet",        self._save_file,  "Ctrl+S")
+        self._act(fm, "Farklı Kaydet", self._save_as)
+        fm.addSeparator()
+        self._act(fm, "Çıkış",         self.close)
+
+        em = mb.addMenu("Düzenle")
+        self._act(em, "Geri Al", self.editor.undo, "Ctrl+Z")
+        self._act(em, "Yinele",  self.editor.redo, "Ctrl+Y")
+
+        vm = mb.addMenu("Görünüm")
+        self._act(vm, "Karanlık Tema", lambda: self._switch_theme("dark"))
+        self._act(vm, "Açık Tema",     lambda: self._switch_theme("light"))
+
+        hm = mb.addMenu("Yardım")
+        self._act(hm, "TSharp Hakkında",
+                  lambda: webbrowser.open("https://github.com/Artfical/TSharp"))
+
+    def _act(self, menu, text, slot, shortcut=None):
+        a = QAction(text, self)
+        if shortcut: a.setShortcut(shortcut)
+        a.triggered.connect(slot)
+        menu.addAction(a)
+
+    # ── TEMA ────────────────────────────────────────────────────────
     def _apply_theme(self):
         T = self.T
-        
-        self.root.config(bg=T["bg"])
-        self.menubar.config(bg=T["panel_bg"], fg=T["fg"], activebackground=T["accent"],
-                            activeforeground="#ffffff")
-        
+
+        self.setStyleSheet(f"""
+            QMainWindow, QWidget {{ background: {T['bg']}; color: {T['fg']}; }}
+            QMenuBar {{ background: {T['panel_bg']}; color: {T['fg']}; border: none; padding: 2px; }}
+            QMenuBar::item:selected {{ background: {T['accent']}; color: #ffffff; border-radius: 3px; }}
+            QMenu {{ background: {T['panel_bg']}; color: {T['fg']}; border: 1px solid {T['border']}; }}
+            QMenu::item:selected {{ background: {T['accent']}; color: #ffffff; }}
+            QSplitter::handle {{ background: {T['border']}; }}
+            QScrollBar:vertical {{ background: {T['panel_bg']}; width: 10px; border: none; margin: 0; }}
+            QScrollBar::handle:vertical {{ background: {T['scrollbar']}; border-radius: 4px; min-height: 20px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}
+            QScrollBar:horizontal {{ background: {T['panel_bg']}; height: 10px; border: none; margin: 0; }}
+            QScrollBar::handle:horizontal {{ background: {T['scrollbar']}; border-radius: 4px; min-width: 20px; }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; border: none; }}
+            QStatusBar {{ background: {T['panel_bg']}; color: {T['fg_dim']}; border-top: 1px solid {T['border']}; }}
+            QStatusBar::item {{ border: none; }}
+        """)
+
         # Toolbar
-        self.toolbar.config(bg=T["panel_bg"])
-        for w in self.toolbar.winfo_children():
-            try: w.config(bg=T["panel_bg"])
-            except: pass
-        
-        for frame in [self._all_widgets.get("left_bar"), self._all_widgets.get("right_bar")]:
-            if frame:
-                try: frame.config(bg=T["panel_bg"])
-                except: pass
-                for child in frame.winfo_children():
-                    try:
-                        kind = getattr(child, "_kind", "normal")
-                        if kind == "run":
-                            child.config(bg=T["run_bg"], fg="#ffffff")
-                        elif kind == "compile":
-                            child.config(bg=T["compile_bg"], fg="#ffffff")
-                        else:
-                            child.config(bg=T["btn_bg"], fg=T["btn_fg"])
-                    except: pass
-        
-        self.title_label.config(bg=T["panel_bg"], fg=T["fg"])
-        self.btn_theme.config(text="Açık Tema" if self.current_theme == "dark" else "Karanlık Tema")
-        self.sep_toolbar.config(bg=T["border"])
-        
+        self.toolbar_widget.setStyleSheet(
+            f"background: {T['panel_bg']}; border-bottom: 1px solid {T['border']};")
+        self.title_label.setStyleSheet(f"color: {T['fg']}; background: transparent;")
+        self.sep_frame.setStyleSheet(f"background: {T['border']};")
+
+        ns = f"QPushButton {{ background: {T['btn_bg']}; color: {T['btn_fg']}; border: none; padding: 3px 10px; border-radius: 4px; }} QPushButton:hover {{ background: {T['btn_hover']}; }}"
+        rs = f"QPushButton {{ background: {T['run_bg']}; color: #fff; border: none; padding: 3px 10px; border-radius: 4px; font-weight: bold; }} QPushButton:hover {{ background: {T['run_hover']}; }}"
+        cs = f"QPushButton {{ background: {T['compile_bg']}; color: #fff; border: none; padding: 3px 10px; border-radius: 4px; font-weight: bold; }} QPushButton:hover {{ background: {T['compile_hover']}; }}"
+
+        for b in [self.btn_new, self.btn_open, self.btn_save, self.btn_theme]:
+            b.setStyleSheet(ns)
+        self.btn_run.setStyleSheet(rs)
+        self.btn_compile.setStyleSheet(cs)
+        self.btn_theme.setText("Açık Tema" if self.current_theme == "dark" else "Karanlık Tema")
+
         # Sidebar
-        self.sidebar.config(bg=T["sidebar_bg"])
-        self.sidebar_title_lbl.master.config(bg=T["sidebar_bg"])
-        self.sidebar_title_lbl.config(bg=T["sidebar_bg"], fg=T["fg_dim"])
-        
-        # Treeview stili
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Treeview",
-            background=T["sidebar_bg"], foreground=T["fg"],
-            fieldbackground=T["sidebar_bg"], borderwidth=0,
-            rowheight=22, font=self.font_sidebar)
-        style.configure("Treeview.Heading",
-            background=T["sidebar_bg"], foreground=T["fg_dim"])
-        style.map("Treeview",
-            background=[("selected", T["sel_bg"])],
-            foreground=[("selected", T["fg"])])
-        style.configure("Vertical.TScrollbar",
-            background=T["panel_bg"], troughcolor=T["panel_bg"],
-            bordercolor=T["panel_bg"], arrowcolor=T["fg_dim"])
-        
-        # Editor
-        self.editor_frame.config(bg=T["editor_bg"])
-        self.editor.config(bg=T["editor_bg"], fg=T["fg"], insertbackground=T["cursor"],
-                           selectbackground=T["sel_bg"], selectforeground=T["fg"],
-                           font=self.font_editor)
-        self.lineno.config(bg=T["sidebar_bg"], fg=T["line_no"], font=self.font_lineno)
-        self.editor_vscroll.config(bg=T["panel_bg"], troughcolor=T["editor_bg"],
-                                   activebackground=T["scrollbar"])
-        
+        self.sidebar_widget.setStyleSheet(f"background: {T['sidebar_bg']};")
+        self.sidebar_hdr.setStyleSheet(f"background: {T['sidebar_bg']}; border-bottom: 1px solid {T['border']};")
+        self.sidebar_title.setStyleSheet(f"color: {T['fg_dim']}; background: transparent;")
+        self.file_tree.setStyleSheet(f"""
+            QTreeWidget {{ background: {T['sidebar_bg']}; color: {T['fg']}; border: none; outline: none; }}
+            QTreeWidget::item:selected {{ background: {T['sel_bg']}; color: {T['fg']}; }}
+            QTreeWidget::item:hover {{ background: {T['btn_hover']}; }}
+        """)
+
+        # Editör
+        self.editor.setStyleSheet(f"""
+            QPlainTextEdit {{ background: {T['editor_bg']}; color: {T['fg']};
+                              border: none; selection-background-color: {T['sel_bg']}; }}
+        """)
+        p = self.editor.palette()
+        p.setColor(QPalette.ColorRole.Base, QColor(T["editor_bg"]))
+        p.setColor(QPalette.ColorRole.Text, QColor(T["fg"]))
+        self.editor.setPalette(p)
+        self.editor.setCursorWidth(2)
+        self.editor.set_theme(T)
+
         # Terminal
-        self.terminal_frame.config(bg=T["terminal_bg"])
-        self.term_hdr.config(bg=T["panel_bg"])
-        for child in self.term_hdr.winfo_children():
-            try: child.config(bg=T["panel_bg"], fg=T["fg_dim"])
-            except: pass
-        self.btn_clear_term.config(bg=T["btn_bg"], fg=T["btn_fg"])
-        self.terminal.config(bg=T["terminal_bg"], fg=T["fg"], font=self.font_terminal,
-                             insertbackground=T["cursor"])
-        
+        self.terminal_container.setStyleSheet(f"background: {T['terminal_bg']};")
+        self.term_hdr.setStyleSheet(f"background: {T['panel_bg']}; border-top: 1px solid {T['border']};")
+        self.term_title_lbl.setStyleSheet(f"color: {T['fg_dim']}; background: transparent;")
+        self.terminal.setStyleSheet(
+            f"QPlainTextEdit {{ background: {T['terminal_bg']}; color: {T['fg']}; border: none; }}")
+        self.btn_clear_term.setStyleSheet(
+            f"QPushButton {{ background: {T['btn_bg']}; color: {T['btn_fg']}; border: none; padding: 2px 8px; border-radius: 3px; }} QPushButton:hover {{ background: {T['btn_hover']}; }}")
+
         # Diagnostics
-        self.diag_frame.config(bg=T["diag_bg"])
-        self.diag_hdr.config(bg=T["panel_bg"])
-        self.diag_title_lbl.config(bg=T["panel_bg"], fg=T["fg_dim"])
-        self.diag_count_lbl.config(bg=T["panel_bg"], fg=T["fg_dim"])
-        self.diag_list.config(bg=T["diag_bg"], fg=T["fg"], selectbackground=T["sel_bg"],
-                               selectforeground=T["fg"], font=self.font_diag)
-        
-        # Statusbar
-        self.statusbar.config(bg=T["panel_bg"])
-        self.status_lbl.config(bg=T["panel_bg"], fg=T["fg_dim"])
-        self.cursor_lbl.config(bg=T["panel_bg"], fg=T["fg_dim"])
-        
-        # Paned
-        self.paned_main.config(bg=T["border"])
-        self.center_paned.config(bg=T["border"])
-        self.editor_paned.config(bg=T["border"])
-        
-        # Editör syntax tagları yeniden tanımla
-        self._setup_syntax_tags()
-        self._highlight_syntax()
-        self._update_lineno()
-    
-    def _setup_syntax_tags(self):
-        T = self.T
-        self.editor.tag_configure("keyword",  foreground=T["syn_keyword"])
-        self.editor.tag_configure("string",   foreground=T["syn_string"])
-        self.editor.tag_configure("number",   foreground=T["syn_number"])
-        self.editor.tag_configure("comment",  foreground=T["syn_comment"], font=(self.font_editor.actual()["family"], self.font_editor.actual()["size"], "italic"))
-        self.editor.tag_configure("function", foreground=T["syn_function"])
-        self.editor.tag_configure("builtin",  foreground=T["syn_builtin"])
-        self.editor.tag_configure("operator", foreground=T["syn_operator"])
-        self.editor.tag_configure("boolean",  foreground=T["syn_boolean"])
-        
-        self.editor.tag_configure("diag_error",   underline=True, foreground=T["diag_error"])
-        self.editor.tag_configure("diag_warning",  underline=True, foreground=T["diag_warning"])
-        self.editor.tag_configure("diag_info",     underline=True, foreground=T["diag_info"])
-        
-        self.terminal.tag_configure("stdout", foreground=T["fg"])
-        self.terminal.tag_configure("stderr", foreground=T["diag_error"])
-        self.terminal.tag_configure("info",   foreground=T["diag_info"])
-        self.terminal.tag_configure("cmd",    foreground=T["syn_function"])
-    
-    def _switch_theme(self, theme_name):
-        self.current_theme = theme_name
-        self.T = THEMES[theme_name]
+        self.diag_container.setStyleSheet(f"background: {T['diag_bg']};")
+        self.diag_hdr.setStyleSheet(f"background: {T['panel_bg']}; border-bottom: 1px solid {T['border']};")
+        self.diag_title_lbl.setStyleSheet(f"color: {T['fg_dim']}; background: transparent;")
+        self.diag_count_lbl.setStyleSheet(f"color: {T['fg_dim']}; background: transparent;")
+        self.diag_list.setStyleSheet(f"""
+            QListWidget {{ background: {T['diag_bg']}; color: {T['fg']}; border: none; outline: none; }}
+            QListWidget::item:selected {{ background: {T['sel_bg']}; }}
+            QListWidget::item:hover {{ background: {T['btn_hover']}; }}
+        """)
+
+        # Status bar
+        self.status_bar.setStyleSheet(
+            f"background: {T['panel_bg']}; color: {T['fg_dim']}; border-top: 1px solid {T['border']};")
+        self.status_lbl.setStyleSheet(f"color: {T['fg_dim']}; background: transparent;")
+        self.cursor_lbl.setStyleSheet(f"color: {T['fg_dim']}; background: transparent;")
+
+        # Highlighter
+        self.highlighter.set_theme(T)
+        self.highlighter.set_diagnostics(self.diagnostics)
+
+    def _switch_theme(self, name):
+        self.current_theme = name
+        self.T = THEMES[name]
         self._apply_theme()
-    
+
     def _toggle_theme(self):
-        new_theme = "light" if self.current_theme == "dark" else "dark"
-        self._switch_theme(new_theme)
-    
-    # ─────────────────────────────────────
-    # SYNTAX HIGHLIGHTING
-    # ─────────────────────────────────────
-    def _highlight_syntax(self, event=None):
-        code = self.editor.get("1.0", "end-1c")
-        
-        # Tüm tagları temizle
-        for tag in ["keyword", "string", "number", "comment", "function", "builtin", "operator", "boolean",
-                    "diag_error", "diag_warning", "diag_info"]:
-            self.editor.tag_remove(tag, "1.0", "end")
-        
-        lines = code.split("\n")
-        
-        for i, line in enumerate(lines):
-            line_start = f"{i+1}.0"
-            
-            # Yorum
-            comment_match = re.search(r'(?<!:)(//)', line)
-            in_str_pos = self._first_string_pos(line)
-            if comment_match:
-                cm_start = comment_match.start()
-                if in_str_pos < 0 or cm_start < in_str_pos:
-                    self.editor.tag_add("comment", f"{i+1}.{cm_start}", f"{i+1}.{len(line)}")
-                    line = line[:cm_start]
-            
-            # String'ler
-            for m in re.finditer(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', line):
-                self.editor.tag_add("string", f"{i+1}.{m.start()}", f"{i+1}.{m.end()}")
-            
-            # Sayılar
-            for m in re.finditer(r'\b\d+\.?\d*\b', line):
-                self.editor.tag_add("number", f"{i+1}.{m.start()}", f"{i+1}.{m.end()}")
-            
-            # Tokenlar
-            tokens = re.finditer(r'\b([a-zA-Z_\u00c0-\u024f][a-zA-Z0-9_\u00c0-\u024f]*)\b', line)
-            for m in tokens:
-                word = m.group(1)
-                col_s = m.start()
-                col_e = m.end()
-                if word in TSHARP_KEYWORDS:
-                    self.editor.tag_add("keyword", f"{i+1}.{col_s}", f"{i+1}.{col_e}")
-                elif word in TSHARP_BUILTINS:
-                    self.editor.tag_add("builtin", f"{i+1}.{col_s}", f"{i+1}.{col_e}")
-                elif word in TSHARP_BOOLEANS:
-                    self.editor.tag_add("boolean", f"{i+1}.{col_s}", f"{i+1}.{col_e}")
-            
-            # Operatörler
-            for m in re.finditer(r'(\+\+|--|==|!=|<=|>=|[+\-*/%=<>!])', line):
-                self.editor.tag_add("operator", f"{i+1}.{m.start()}", f"{i+1}.{m.end()}")
-        
-        # Diagnostics işaretleme
-        for line_no, severity, msg in self.diagnostics:
-            tag = f"diag_{severity}"
-            try:
-                line_content = self.editor.get(f"{line_no}.0", f"{line_no}.end")
-                if line_content.strip():
-                    self.editor.tag_add(tag, f"{line_no}.0", f"{line_no}.end")
-            except:
-                pass
-    
-    def _first_string_pos(self, line):
-        for i, ch in enumerate(line):
-            if ch in ('"', "'"):
-                return i
-        return -1
-    
-    # ─────────────────────────────────────
-    # SATIR NUMARALARI
-    # ─────────────────────────────────────
-    def _update_lineno(self, event=None):
-        self.lineno.config(state="normal")
-        self.lineno.delete("1.0", "end")
-        count = int(self.editor.index("end-1c").split(".")[0])
-        nums = "\n".join(str(n) for n in range(1, count + 1))
-        self.lineno.insert("1.0", nums)
-        self.lineno.config(state="disabled")
-        
-        # Cursor pozisyonu
-        try:
-            pos = self.editor.index("insert")
-            row, col = pos.split(".")
-            self.cursor_var.set(f"Satır {row}, Sütun {int(col)+1}")
-        except:
-            pass
-    
-    def _sync_scroll(self, *args):
-        self.editor_vscroll.set(*args)
-        self.lineno.yview_moveto(args[0])
-    
-    def _on_scroll(self, *args):
-        self.editor.yview(*args)
-        self.lineno.yview(*args)
-    
-    # ─────────────────────────────────────
-    # TUSLAMA OLAYLARI
-    # ─────────────────────────────────────
-    def _on_key_release(self, event=None):
-        self.saved = False
-        self._update_title()
-        self._update_lineno()
-        
-        # Debounce highlight
-        if self.highlight_job:
-            self.root.after_cancel(self.highlight_job)
-        self.highlight_job = self.root.after(120, self._highlight_syntax)
-        
-        # Debounce diagnostics
-        if self.diag_job:
-            self.root.after_cancel(self.diag_job)
-        self.diag_job = self.root.after(400, self._run_diagnostics)
-    
+        self._switch_theme("light" if self.current_theme == "dark" else "dark")
+
+    # ── SYNTAX / DIAG ────────────────────────────────────────────────
+    def _highlight_syntax(self):
+        self.highlighter.set_diagnostics(self.diagnostics)
+
     def _run_diagnostics(self):
-        code = self.editor.get("1.0", "end-1c")
-        self.diagnostics = analyze_tsharp(code)
+        self.diagnostics = analyze_tsharp(self.editor.toPlainText())
         self._update_diag_panel()
-        self._highlight_syntax()
-    
+        self.highlighter.set_diagnostics(self.diagnostics)
+
     def _update_diag_panel(self):
         T = self.T
-        self.diag_list.delete(0, "end")
-        
+        self.diag_list.clear()
         errors   = sum(1 for d in self.diagnostics if d[1] == "error")
         warnings = sum(1 for d in self.diagnostics if d[1] == "warning")
-        
-        count_str = ""
-        if errors:   count_str += f"{errors} hata  "
-        if warnings: count_str += f"{warnings} uyarı"
-        if not self.diagnostics: count_str = "Sorun yok"
-        self.diag_count_var.set(count_str)
-        
-        severity_icons = {"error": "E", "warning": "U", "info": "B"}
-        severity_colors = {
-            "error":   T["diag_error"],
-            "warning": T["diag_warning"],
-            "info":    T["diag_info"],
-        }
-        
-        self._diag_colors = []
-        for (line_no, severity, msg) in self.diagnostics:
-            icon = severity_icons.get(severity, "?")
+
+        if not self.diagnostics:
+            self.diag_count_lbl.setText("Sorun yok")
+        else:
+            parts = []
+            if errors:   parts.append(f"{errors} hata")
+            if warnings: parts.append(f"{warnings} uyarı")
+            self.diag_count_lbl.setText("  ".join(parts))
+
+        icon_map  = {"error": "E", "warning": "U", "info": "B"}
+        color_map = {"error": T["diag_error"], "warning": T["diag_warning"], "info": T["diag_info"]}
+
+        for line_no, severity, msg in self.diagnostics:
+            icon = icon_map.get(severity, "?")
             text = f"  [{icon}] Sat.{line_no}: {msg}"
-            if len(text) > 52:
-                text = text[:49] + "..."
-            self.diag_list.insert("end", text)
-            self._diag_colors.append(severity_colors.get(severity, T["fg"]))
-        
-        for idx, color in enumerate(self._diag_colors):
-            self.diag_list.itemconfig(idx, foreground=color)
-    
-    def _diag_goto_line(self, event=None):
-        sel = self.diag_list.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        if idx < len(self.diagnostics):
-            line_no = self.diagnostics[idx][0]
-            self.editor.see(f"{line_no}.0")
-            self.editor.mark_set("insert", f"{line_no}.0")
-            self.editor.focus_set()
-    
-    # ─────────────────────────────────────
-    # SIDEBAR - DOSYA GEZGİNİ
-    # ─────────────────────────────────────
+            if len(text) > 52: text = text[:49] + "..."
+            item = QListWidgetItem(text)
+            item.setForeground(QColor(color_map.get(severity, T["fg"])))
+            item.setData(Qt.ItemDataRole.UserRole, line_no)
+            self.diag_list.addItem(item)
+
+    def _diag_goto_line(self, item):
+        line_no = item.data(Qt.ItemDataRole.UserRole)
+        if line_no:
+            block = self.editor.document().findBlockByNumber(line_no - 1)
+            cur = self.editor.textCursor()
+            cur.setPosition(block.position())
+            self.editor.setTextCursor(cur)
+            self.editor.ensureCursorVisible()
+            self.editor.setFocus()
+
+    # ── TEXT EVENTS ──────────────────────────────────────────────────
+    def _on_text_changed(self):
+        self.saved = False
+        self._update_title()
+        self._hl_timer.start(120)
+        self._diag_timer.start(400)
+
+    def _update_cursor_pos(self):
+        ln, col = self.editor.get_cursor_pos()
+        self.cursor_lbl.setText(f"Satır {ln}, Sütun {col}")
+
+    # ── SIDEBAR ──────────────────────────────────────────────────────
     def _load_sidebar_dir(self, path):
-        self.file_tree.delete(*self.file_tree.get_children())
-        self._sidebar_path = path
-        self._populate_tree("", path)
-    
+        self.file_tree.clear()
+        self._populate_tree(None, path)
+
     def _populate_tree(self, parent, path):
         try:
             entries = sorted(os.scandir(path), key=lambda e: (not e.is_dir(), e.name.lower()))
         except PermissionError:
             return
-        
         for entry in entries:
-            if entry.name.startswith("."):
-                continue
+            if entry.name.startswith("."): continue
             is_dir = entry.is_dir()
             is_tsh = entry.name.endswith((".tsh", ".tsharp"))
-            
-            if is_dir or is_tsh:
-                prefix = "D " if is_dir else "  "
-                node = self.file_tree.insert(parent, "end", text=f"{prefix}{entry.name}",
-                                              values=(entry.path,), open=False)
-                if is_dir:
-                    # yer tutucu
-                    self.file_tree.insert(node, "end", text="__placeholder__", values=("",))
-        
-        self.file_tree.bind("<<TreeviewOpen>>", self._on_tree_open)
-    
-    def _on_tree_open(self, event):
-        node = self.file_tree.focus()
-        children = self.file_tree.get_children(node)
-        if len(children) == 1 and self.file_tree.item(children[0], "text") == "__placeholder__":
-            self.file_tree.delete(children[0])
-            path = self.file_tree.item(node, "values")[0]
-            if path:
-                self._populate_tree(node, path)
-    
-    def _sidebar_click(self, event):
-        pass
-    
-    def _sidebar_double_click(self, event):
-        node = self.file_tree.focus()
-        vals = self.file_tree.item(node, "values")
-        if not vals or not vals[0]:
-            return
-        path = vals[0]
-        if os.path.isfile(path) and path.endswith((".tsh", ".tsharp")):
+            if not (is_dir or is_tsh): continue
+            prefix = "D " if is_dir else "  "
+            item = QTreeWidgetItem([f"{prefix}{entry.name}"])
+            item.setData(0, Qt.ItemDataRole.UserRole, entry.path)
+            if is_dir:
+                item.addChild(QTreeWidgetItem(["__placeholder__"]))
+            if parent is None:
+                self.file_tree.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+
+    def _on_tree_expand(self, item):
+        if item.childCount() == 1 and item.child(0).text(0) == "__placeholder__":
+            item.removeChild(item.child(0))
+            path = item.data(0, Qt.ItemDataRole.UserRole)
+            if path: self._populate_tree(item, path)
+
+    def _sidebar_double_click(self, item, col):
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if path and os.path.isfile(path) and path.endswith((".tsh", ".tsharp")):
             self._open_path(path)
-    
-    # ─────────────────────────────────────
-    # DOSYA İŞLEMLERİ
-    # ─────────────────────────────────────
+
+    # ── DOSYA İŞLEMLERİ ──────────────────────────────────────────────
     def _new_file(self):
-        if not self._confirm_discard():
-            return
-        self.editor.delete("1.0", "end")
+        if not self._confirm_discard(): return
+        self.editor.setPlainText("")
         self.current_file = None
         self.saved = True
-        self.title_var.set("adsiz.tsh")
-        self.root.title("TSharp GO - adsiz.tsh")
-        self._clear_diagnostics()
-        self._update_lineno()
-        self._highlight_syntax()
-    
+        self.title_label.setText("adsiz.tsh")
+        self.setWindowTitle("TSharp GO - adsiz.tsh")
+        self.diagnostics = []
+        self._update_diag_panel()
+        self.highlighter.set_diagnostics([])
+
     def _open_file(self):
-        if not self._confirm_discard():
-            return
-        path = filedialog.askopenfilename(
-            title="Dosya Aç",
-            filetypes=[("T# Dosyaları", "*.tsh *.tsharp"), ("Tüm Dosyalar", "*.*")]
-        )
-        if path:
-            self._open_path(path)
-    
+        if not self._confirm_discard(): return
+        path, _ = QFileDialog.getOpenFileName(self, "Dosya Aç", "",
+            "T# Dosyaları (*.tsh *.tsharp);;Tüm Dosyalar (*.*)")
+        if path: self._open_path(path)
+
     def _open_path(self, path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
-            self.editor.delete("1.0", "end")
-            self.editor.insert("1.0", content)
-            self.current_file = path
-            self.saved = True
+            self.editor.setPlainText(content)
+            self.current_file = path; self.saved = True
             name = os.path.basename(path)
-            self.title_var.set(name)
-            self.root.title(f"TSharp GO - {name}")
+            self.title_label.setText(name)
+            self.setWindowTitle(f"TSharp GO - {name}")
             self._run_diagnostics()
-            self._update_lineno()
-            self._highlight_syntax()
-            self.status_var.set(f"Açıldı: {path}")
+            self.status_lbl.setText(f"Açıldı: {path}")
         except Exception as ex:
-            messagebox.showerror("Hata", f"Dosya okunamadı:\n{ex}")
-    
+            QMessageBox.critical(self, "Hata", f"Dosya okunamadı:\n{ex}")
+
     def _save_file(self):
-        if self.current_file is None:
-            self._save_as()
-            return
+        if self.current_file is None: self._save_as(); return
         self._write_file(self.current_file)
-    
+
     def _save_as(self):
-        path = filedialog.asksaveasfilename(
-            title="Farklı Kaydet",
-            defaultextension=".tsh",
-            filetypes=[("T# Dosyası", "*.tsh"), ("T# Uzun", "*.tsharp"), ("Tüm Dosyalar", "*.*")]
-        )
-        if path:
-            self.current_file = path
-            self._write_file(path)
-    
+        path, _ = QFileDialog.getSaveFileName(self, "Farklı Kaydet", "",
+            "T# Dosyası (*.tsh);;T# Uzun (*.tsharp);;Tüm Dosyalar (*.*)")
+        if path: self.current_file = path; self._write_file(path)
+
     def _write_file(self, path):
         try:
-            content = self.editor.get("1.0", "end-1c")
             with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+                f.write(self.editor.toPlainText())
             self.saved = True
             name = os.path.basename(path)
-            self.title_var.set(name)
-            self.root.title(f"TSharp GO - {name}")
-            self.status_var.set(f"Kaydedildi: {path}")
+            self.title_label.setText(name)
+            self.setWindowTitle(f"TSharp GO - {name}")
+            self.status_lbl.setText(f"Kaydedildi: {path}")
         except Exception as ex:
-            messagebox.showerror("Hata", f"Dosya kaydedilemedi:\n{ex}")
-    
+            QMessageBox.critical(self, "Hata", f"Dosya kaydedilemedi:\n{ex}")
+
     def _confirm_discard(self):
         if not self.saved:
-            ans = messagebox.askyesnocancel(
-                "Kaydedilmemiş Değişiklikler",
-                "Dosyada kaydedilmemiş değişiklikler var. Devam etmek istiyor musunuz?"
-            )
-            if ans is None:
-                return False
-            if ans:
-                self._save_file()
+            ans = QMessageBox.question(self, "Kaydedilmemiş Değişiklikler",
+                "Dosyada kaydedilmemiş değişiklikler var. Devam etmek istiyor musunuz?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No |
+                QMessageBox.StandardButton.Cancel)
+            if ans == QMessageBox.StandardButton.Cancel: return False
+            if ans == QMessageBox.StandardButton.Yes: self._save_file()
         return True
-    
+
     def _update_title(self):
-        base = os.path.basename(self.current_file) if self.current_file else "adsiz.tsh"
+        base   = os.path.basename(self.current_file) if self.current_file else "adsiz.tsh"
         marker = " *" if not self.saved else ""
-        self.title_var.set(base + marker)
-        self.root.title(f"TSharp GO - {base}{marker}")
-    
-    def _clear_diagnostics(self):
-        self.diagnostics = []
-        self._update_diag_panel()
-    
-    # ─────────────────────────────────────
-    # TERMINAL
-    # ─────────────────────────────────────
+        self.title_label.setText(base + marker)
+        self.setWindowTitle(f"TSharp GO - {base}{marker}")
+
+    # ── TERMINAL ─────────────────────────────────────────────────────
     def _terminal_write(self, text, tag="stdout"):
-        self.terminal.config(state="normal")
-        self.terminal.insert("end", text, tag)
-        self.terminal.see("end")
-        self.terminal.config(state="disabled")
-    
+        T = self.T
+        colors = {"stdout": T["fg"], "stderr": T["diag_error"],
+                  "info": T["diag_info"], "cmd": T["syn_function"]}
+        cur = self.terminal.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(colors.get(tag, T["fg"])))
+        cur.insertText(text, fmt)
+        self.terminal.setTextCursor(cur)
+        self.terminal.ensureCursorVisible()
+
     def _clear_terminal(self):
-        self.terminal.config(state="normal")
-        self.terminal.delete("1.0", "end")
-        self.terminal.config(state="disabled")
-    
-    # ─────────────────────────────────────
-    # ÇALIŞTIR
-    # ─────────────────────────────────────
+        self.terminal.clear()
+
+    # ── ÇALIŞTIR / DERLE ─────────────────────────────────────────────
     def _run(self):
-        if not self._save_before_run():
-            return
-        
-        tsharp_cmd = shutil.which("tsharp")
-        if tsharp_cmd is None:
-            self._show_download_popup(
-                "TSharp Bulunamadı",
+        if not self._save_before_run(): return
+        cmd = shutil.which("tsharp")
+        if cmd is None:
+            DownloadPopup(self, "TSharp Bulunamadı",
                 "TSharp çalıştırıcısı sisteminizde bulunamadı.\nTSharp'i indirmek için aşağıdaki düğmeye basın:",
-                "TSharp İndir",
-                "https://github.com/Artfical/TSharp/releases"
-            )
+                "TSharp İndir", "https://github.com/Artfical/TSharp/releases", self.T).exec()
             return
-        
-        cmd = [tsharp_cmd, self.current_file]
-        cmd_str = " ".join(cmd)
-        self._clear_terminal()
-        self._terminal_write(f"> {cmd_str}\n", "cmd")
-        self.status_var.set("Çalıştırılıyor...")
-        
-        threading.Thread(target=self._exec_cmd, args=(cmd,), daemon=True).start()
-    
-    # ─────────────────────────────────────
-    # DERLE
-    # ─────────────────────────────────────
+        self._exec_cmd([cmd, self.current_file])
+
     def _compile(self):
-        if not self._save_before_run():
-            return
-        
-        compile_cmd = shutil.which("tcompile") or shutil.which("derle")
-        if compile_cmd is None:
-            self._show_download_popup(
-                "TCompile Bulunamadı",
+        if not self._save_before_run(): return
+        cmd = shutil.which("tcompile") or shutil.which("derle")
+        if cmd is None:
+            DownloadPopup(self, "TCompile Bulunamadı",
                 "TCompile derleyicisi sisteminizde bulunamadı.\nTCompile'i indirmek için aşağıdaki düğmeye basın:",
-                "TCompile İndir",
-                "https://github.com/Artfical/TCompile/releases"
-            )
+                "TCompile İndir", "https://github.com/Artfical/TCompile/releases", self.T).exec()
             return
-        
-        cmd = [compile_cmd, "--tekdosya", self.current_file]
-        cmd_str = " ".join(cmd)
+        self._exec_cmd([cmd, "--tekdosya", self.current_file])
+
+    def _exec_cmd(self, cmd):
         self._clear_terminal()
-        self._terminal_write(f"> {cmd_str}\n", "cmd")
-        self.status_var.set("Derleniyor...")
-        
-        threading.Thread(target=self._exec_cmd, args=(cmd,), daemon=True).start()
-    
+        self._terminal_write(f"> {' '.join(cmd)}\n", "cmd")
+        self.status_lbl.setText("Çalıştırılıyor..." if "tsharp" in cmd[0] else "Derleniyor...")
+        self._run_thread = RunThread(cmd)
+        self._run_thread.output.connect(self._terminal_write)
+        self._run_thread.finished.connect(self._on_run_finished)
+        self._run_thread.start()
+
+    def _on_run_finished(self, ret):
+        tag = "info" if ret == 0 else "stderr"
+        self._terminal_write(f"\n[İşlem tamamlandı, çıkış kodu: {ret}]\n", tag)
+        self.status_lbl.setText("Hazır" if ret == 0 else f"Hata (kod {ret})")
+
     def _save_before_run(self):
         if self.current_file is None:
-            path = filedialog.asksaveasfilename(
-                title="Önce Dosyayı Kaydedin",
-                defaultextension=".tsh",
-                filetypes=[("T# Dosyası", "*.tsh"), ("T# Uzun", "*.tsharp")]
-            )
-            if not path:
-                return False
-            self.current_file = path
-            self._write_file(path)
+            path, _ = QFileDialog.getSaveFileName(self, "Önce Dosyayı Kaydedin", "",
+                "T# Dosyası (*.tsh);;T# Uzun (*.tsharp)")
+            if not path: return False
+            self.current_file = path; self._write_file(path)
         elif not self.saved:
             self._save_file()
         return True
-    
-    def _exec_cmd(self, cmd):
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace"
-            )
-            
-            def read_stream(stream, tag):
-                for line in iter(stream.readline, ""):
-                    self.root.after(0, self._terminal_write, line, tag)
-                stream.close()
-            
-            t_out = threading.Thread(target=read_stream, args=(proc.stdout, "stdout"), daemon=True)
-            t_err = threading.Thread(target=read_stream, args=(proc.stderr, "stderr"), daemon=True)
-            t_out.start()
-            t_err.start()
-            t_out.join()
-            t_err.join()
-            
-            ret = proc.wait()
-            msg = f"\n[Islem tamamlandi, çıkış kodu: {ret}]\n"
-            tag = "info" if ret == 0 else "stderr"
-            self.root.after(0, self._terminal_write, msg, tag)
-            self.root.after(0, self.status_var.set, "Hazır" if ret == 0 else f"Hata (kod {ret})")
-        
-        except Exception as ex:
-            self.root.after(0, self._terminal_write, f"\n[Hata: {ex}]\n", "stderr")
-            self.root.after(0, self.status_var.set, "Hata")
-    
-    # ─────────────────────────────────────
-    # DOWNLOAD POPUP
-    # ─────────────────────────────────────
-    def _show_download_popup(self, title, message, btn_text, url):
-        T = self.T
-        
-        popup = tk.Toplevel(self.root)
-        popup.title(title)
-        popup.resizable(False, False)
-        popup.grab_set()
-        popup.config(bg=T["panel_bg"])
-        
-        # Lisans bilgisi
-        license_frame = tk.Frame(popup, bg=T["sidebar_bg"])
-        license_frame.pack(fill="x", padx=0, pady=0)
-        
-        license_text = "TSharp ve diğer tüm Artfical ürünlerini kullanarak GNU AGPL v3 lisansını kabul edersiniz."
-        lbl_license = tk.Label(license_frame, text=license_text, font=self.font_sidebar,
-                                bg=T["sidebar_bg"], fg=T["fg_dim"], wraplength=380, pady=6, padx=12)
-        lbl_license.pack(side="left")
-        
-        gnu_link = tk.Label(license_frame, text="GNU AGPL v3", font=self.font_sidebar,
-                             bg=T["sidebar_bg"], fg=T["accent"], cursor="hand2")
-        gnu_link.pack(side="left", padx=(0, 12))
-        gnu_link.bind("<Button-1>", lambda e: webbrowser.open("https://www.gnu.org/licenses/agpl-3.0.html"))
-        
-        # İçerik
-        content_frame = tk.Frame(popup, bg=T["panel_bg"])
-        content_frame.pack(fill="both", expand=True, padx=24, pady=20)
-        
-        lbl_title = tk.Label(content_frame, text=title, font=self.font_ui_bold,
-                              bg=T["panel_bg"], fg=T["fg"])
-        lbl_title.pack(anchor="w", pady=(0, 10))
-        
-        lbl_msg = tk.Label(content_frame, text=message, font=self.font_ui,
-                            bg=T["panel_bg"], fg=T["fg"], wraplength=380, justify="left")
-        lbl_msg.pack(anchor="w", pady=(0, 16))
-        
-        btn_download = tk.Button(
-            content_frame, text=btn_text,
-            font=self.font_ui_bold,
-            bg=T["run_bg"], fg="#ffffff",
-            bd=0, padx=14, pady=6, cursor="hand2",
-            command=lambda: [webbrowser.open(url), popup.destroy()]
-        )
-        btn_download.pack(anchor="w")
-        
-        btn_close = tk.Button(
-            content_frame, text="Kapat",
-            font=self.font_ui,
-            bg=T["btn_bg"], fg=T["btn_fg"],
-            bd=0, padx=10, pady=4, cursor="hand2",
-            command=popup.destroy
-        )
-        btn_close.pack(anchor="w", pady=(8, 0))
-        
-        # Ortala
-        popup.update_idletasks()
-        w, h = popup.winfo_width(), popup.winfo_height()
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        popup.geometry(f"+{(sw-w)//2}+{(sh-h)//2}")
+
+    def closeEvent(self, event):
+        if self._confirm_discard(): event.accept()
+        else: event.ignore()
 
 
 # ─────────────────────────────────────────────────────────────────────
 # BAŞLANGIÇ
 # ─────────────────────────────────────────────────────────────────────
 def main():
-    root = tk.Tk()
-    root.title("TSharp GO")
-    
-    try:
-        # Windows için DPI farkındalığı
-        from ctypes import windll
-        windll.shcore.SetProcessDpiAwareness(1)
-    except:
-        pass
-    
-    app = TSharpGO(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    app.setApplicationName("TSharp GO")
+    app.setStyle("Fusion")
+    w = TSharpGO()
+    w.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
